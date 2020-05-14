@@ -170,7 +170,7 @@ func (q *Query) Node(dst ...interface{}) (err error) {
 	}
 
 	// make sure only 1 node is return
-	q.first = 1
+	//q.first = 1
 
 	result, err := q.executeQuery()
 	if err != nil {

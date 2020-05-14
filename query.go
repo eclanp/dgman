@@ -58,6 +58,7 @@ type Query struct {
 	order       []order
 	uid         string
 	filter      string
+	recurse     int
 	query       string
 }
 
@@ -70,6 +71,11 @@ func (q *Query) Query(query string, params ...interface{}) *Query {
 // Filter defines a query filter, return predicates at the first depth
 func (q *Query) Filter(filter string, params ...interface{}) *Query {
 	q.filter = parseQueryWithParams(filter, params)
+	return q
+}
+
+func (q *Query) Recurse(depth int) *Query {
+	q.recurse = depth
 	return q
 }
 
@@ -245,6 +251,12 @@ func (q *Query) String() string {
 	if q.filter != "" {
 		queryBuf.WriteString("@filter(")
 		queryBuf.WriteString(q.filter)
+		queryBuf.WriteByte(')')
+	}
+
+	if q.recurse > 0 {
+		queryBuf.WriteString("@recurse(depth:")
+		queryBuf.Write(intToBytes(q.recurse))
 		queryBuf.WriteByte(')')
 	}
 

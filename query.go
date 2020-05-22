@@ -60,6 +60,12 @@ type Query struct {
 	filter      string
 	recurse     int
 	query       string
+	blocks      []*Block
+}
+
+func (q *Query) Block(b *Block) *Query {
+	q.blocks = append(q.blocks, b)
+	return q
 }
 
 // Query defines the query portion other than the root function
@@ -200,9 +206,16 @@ func (q *Query) String() string {
 		queryBuf.WriteString("query ")
 		queryBuf.WriteString(q.paramString)
 	}
+	queryBuf.WriteByte('{')
+
+	if len(q.blocks) > 0 {
+		for i := 0; i < len(q.blocks); i++ {
+			queryBuf.WriteString(q.blocks[i].String())
+		}
+	}
 
 	// START ROOT FUNCTION
-	queryBuf.WriteString("{\n\tdata(func: ")
+	queryBuf.WriteString("\n\tdata(func: ")
 
 	if q.uid != "" {
 		queryBuf.WriteString("uid(")

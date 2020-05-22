@@ -130,6 +130,11 @@ func (t *TxnContext) Get(model interface{}) *Query {
 	return &Query{ctx: t.ctx, tx: t.txn, model: model}
 }
 
+func (t *TxnContext) Block(model interface{}) *Block {
+	q := &Query{ctx: t.ctx, tx: t.txn, model: model}
+	return &Block{q: q, ctx: t.ctx, tx: t.txn}
+}
+
 // NewTxnContext creates a new transaction coupled with a context
 func NewTxnContext(ctx context.Context, c *dgo.Dgraph) *TxnContext {
 	return &TxnContext{

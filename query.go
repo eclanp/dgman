@@ -74,6 +74,24 @@ func (q *Query) Query(query string, params ...interface{}) *Query {
 	return q
 }
 
+func (q *Query) AppendFilter(filter string, connect string, params ...interface{}) *Query {
+	var buffer strings.Builder
+
+	if q.filter != "" {
+		buffer.WriteByte(' ')
+		if connect == "" {
+			buffer.WriteString("and")
+		} else {
+			buffer.WriteString(connect)
+		}
+		buffer.WriteByte(' ')
+	}
+	buffer.WriteString(filter)
+	q.filter += parseQueryWithParams(buffer.String(), params)
+
+	return q
+}
+
 // Filter defines a query filter, return predicates at the first depth
 func (q *Query) Filter(filter string, params ...interface{}) *Query {
 	q.filter = parseQueryWithParams(filter, params)

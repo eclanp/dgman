@@ -26,8 +26,8 @@ type UIDs []string
 // FormatParams implements the ParamFormatter interface
 func (u UIDs) FormatParams() []byte {
 	uids := []string(u)
-	for idx, uid := range uids {
-		uids[idx] = uidCleanerRegex.ReplaceAllString(uid, "")
-	}
+	// for idx, uid := range uids {
+	// 	uids[idx] = uidCleanerRegex.ReplaceAllString(uid, "")
+	// }
 	return []byte(strings.Join(uids, ", "))
 }

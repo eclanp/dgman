@@ -130,9 +130,15 @@ func (t *TxnContext) Get(model interface{}) *Query {
 	return &Query{ctx: t.ctx, tx: t.txn, model: model}
 }
 
+// Block create a new var block query
 func (t *TxnContext) Block(model interface{}) *Block {
 	q := &Query{ctx: t.ctx, tx: t.txn, model: model}
 	return &Block{q: q, ctx: t.ctx, tx: t.txn}
+}
+
+// Query prepares a query with multiple query block
+func (t *TxnContext) Query(query ...*Query) *QueryBlock {
+	return &QueryBlock{ctx: t.ctx, tx: t.txn, blocks: query}
 }
 
 // NewTxnContext creates a new transaction coupled with a context

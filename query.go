@@ -17,7 +17,6 @@
 package dgman
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -40,6 +39,78 @@ type ParamFormatter interface {
 	FormatParams() []byte
 }
 
+type QueryBlock struct {
+	ctx         context.Context
+	tx          *dgo.Txn
+	paramString string
+	vars        map[string]string
+	blocks      []*Query
+}
+
+// Vars specify the GraphQL variables to be passed on the query,
+// by specifying the function definition of vars, and variable map.
+// Example funcDef: getUserByEmail($email: string)
+func (q *QueryBlock) Vars(funcDef string, vars map[string]string) *QueryBlock {
+	q.paramString = funcDef
+	q.vars = vars
+	return q
+}
+
+// Add adds a query to the query block
+func (q *QueryBlock) Add(query *Query) *QueryBlock {
+	q.blocks = append(q.blocks, query)
+	return q
+}
+
+// Blocks set the query blocks
+func (q *QueryBlock) Blocks(query ...*Query) *QueryBlock {
+	q.blocks = query
+	return q
+}
+
+// Scan unmarshals the query result into provided destination
+func (q *QueryBlock) Scan(dst interface{}) error {
+	result, err := q.executeQuery()
+	if err != nil {
+		return err
+	}
+	return json.Unmarshal(result, dst)
+}
+
+func (q *QueryBlock) String() string {
+	var queryBuf strings.Builder
+	if q.vars != nil {
+		queryBuf.WriteString("query ")
+		queryBuf.WriteString(q.paramString)
+	}
+
+	queryBuf.WriteString("{\n")
+
+	for _, block := range q.blocks {
+		block.generateQuery(&queryBuf)
+	}
+
+	queryBuf.WriteString("}")
+
+	return queryBuf.String()
+}
+
+func (q *QueryBlock) executeQuery() (result []byte, err error) {
+	queryString := q.String()
+
+	var resp *api.Response
+	if q.vars != nil {
+		resp, err = q.tx.QueryWithVars(q.ctx, queryString, q.vars)
+	} else {
+		resp, err = q.tx.Query(q.ctx, queryString)
+	}
+	if err != nil {
+		return nil, err
+	}
+
+	return resp.Json, nil
+}
+
 type order struct {
 	descending bool
 	clause     string
@@ -49,6 +120,9 @@ type Query struct {
 	ctx         context.Context
 	tx          *dgo.Txn
 	model       interface{}
+	name        string
+	as          string
+	isVar       bool
 	paramString string
 	vars        map[string]string
 	rootFunc    string
@@ -56,11 +130,46 @@ type Query struct {
 	offset      int
 	after       string
 	order       []order
+	groupBy     string
 	uid         string
 	filter      string
 	recurse     int
 	query       string
 	blocks      []*Block
+}
+
+type PagedResults struct {
+	Result   json.RawMessage
+	PageInfo []*PageInfo
+}
+
+type PageInfo struct {
+	Count int
+}
+
+// Name defines the query block name, which identifies the query results
+func (q *Query) Name(queryName string) *Query {
+	q.name = queryName
+	return q
+}
+
+// As defines a query variable name
+// https://dgraph.io/docs/query-language/#query-variables
+func (q *Query) As(varName string) *Query {
+	q.as = varName
+	return q
+}
+
+// Var defines whether a query block is a var, which are not returned in query results
+func (q *Query) Var() *Query {
+	q.isVar = true
+	return q
+}
+
+// Type sets the model struct to infer the node type
+func (q *Query) Type(model interface{}) *Query {
+	q.model = model
+	return q
 }
 
 func (q *Query) Block(b *Block) *Query {
@@ -175,6 +284,12 @@ func (q *Query) After(uid string) *Query {
 	return q
 }
 
+// GroupBy defines the predicate to group the query by
+func (q *Query) GroupBy(predicate string) *Query {
+	q.groupBy = predicate
+	return q
+}
+
 func (q *Query) OrderAsc(clause string) *Query {
 	q.order = append(q.order, order{clause: clause})
 	return q
@@ -218,13 +333,54 @@ func (q *Query) Nodes(dst ...interface{}) error {
 	return Nodes(result, model)
 }
 
-func (q *Query) String() string {
-	var queryBuf bytes.Buffer
-	if q.vars != nil {
-		queryBuf.WriteString("query ")
-		queryBuf.WriteString(q.paramString)
+// NodesAndCount return paged nodes result with the total count of the query
+func (q *Query) NodesAndCount() (count int, err error) {
+	tx := TxnContext{txn: q.tx, ctx: q.ctx}
+
+	pagedResult := PagedResults{}
+	query := tx.Query(
+		&Query{
+			as:       "filtered",
+			isVar:    true,
+			uid:      q.uid,
+			rootFunc: q.rootFunc,
+			model:    q.model,
+			filter:   q.filter,
+		},
+		&Query{
+			name:   "result",
+			uid:    "filtered",
+			first:  q.first,
+			after:  q.after,
+			offset: q.offset,
+			order:  q.order,
+			query:  q.query,
+		},
+		&Query{
+			name:  "pageInfo",
+			uid:   "filtered",
+			query: "{ count(uid) }",
+		},
+	).Vars(q.paramString, q.vars)
+
+	err = query.Scan(&pagedResult)
+	if err != nil {
+		return 0, err
 	}
-	queryBuf.WriteByte('{')
+
+	if pagedResult.Result == nil {
+		return 0, nil
+	}
+
+	if err := json.Unmarshal(pagedResult.Result, q.model); err != nil {
+		return 0, err
+	}
+
+	return pagedResult.PageInfo[0].Count, nil
+}
+
+func (q *Query) generateQuery(queryBuf *strings.Builder) {
+	queryBuf.WriteString("\t")
 
 	if len(q.blocks) > 0 {
 		for i := 0; i < len(q.blocks); i++ {
@@ -232,48 +388,57 @@ func (q *Query) String() string {
 		}
 	}
 
+	if q.as != "" {
+		queryBuf.WriteString(q.as)
+		queryBuf.WriteString(" as ")
+	}
+
+	if q.isVar {
+		queryBuf.WriteString("var")
+	} else {
+		queryBuf.WriteString(q.name)
+	}
+
 	// START ROOT FUNCTION
-	queryBuf.WriteString("\n\tdata(func: ")
+	queryBuf.WriteString("(func: ")
 
 	if q.uid != "" {
 		queryBuf.WriteString("uid(")
 		queryBuf.WriteString(q.uid)
 		queryBuf.WriteString(")")
+	} else if q.rootFunc != "" {
+		queryBuf.WriteString(q.rootFunc)
 	} else {
-		if q.rootFunc == "" {
-			// if root function is not defined, query from node type
-			nodeType := GetNodeType(q.model)
-			queryBuf.WriteString("type(")
-			queryBuf.WriteString(nodeType)
-			queryBuf.WriteByte(')')
-		} else {
-			queryBuf.WriteString(q.rootFunc)
-		}
+		// if root function is not defined, query from node type
+		nodeType := GetNodeType(q.model)
+		queryBuf.WriteString("type(")
+		queryBuf.WriteString(nodeType)
+		queryBuf.WriteByte(')')
+	}
 
-		if q.first != 0 {
-			queryBuf.WriteString(", first: ")
-			queryBuf.Write(intToBytes(q.first))
-		}
+	if q.first != 0 {
+		queryBuf.WriteString(", first: ")
+		queryBuf.Write(intToBytes(q.first))
+	}
 
-		if q.offset != 0 {
-			queryBuf.WriteString(", offset: ")
-			queryBuf.Write(intToBytes(q.offset))
-		}
+	if q.offset != 0 {
+		queryBuf.WriteString(", offset: ")
+		queryBuf.Write(intToBytes(q.offset))
+	}
 
-		if q.after != "" {
-			queryBuf.WriteString(", after: ")
-			queryBuf.WriteString(q.after)
-		}
+	if q.after != "" {
+		queryBuf.WriteString(", after: ")
+		queryBuf.WriteString(q.after)
+	}
 
-		if len(q.order) > 0 {
-			for _, order := range q.order {
-				orderStr := ", orderasc: "
-				if order.descending {
-					orderStr = ", orderdesc: "
-				}
-				queryBuf.WriteString(orderStr)
-				queryBuf.WriteString(order.clause)
+	if len(q.order) > 0 {
+		for i := 0; i < len(q.order); i++ {
+			orderStr := ", orderasc: "
+			if q.order[i].descending {
+				orderStr = ", orderdesc: "
 			}
+			queryBuf.WriteString(orderStr)
+			queryBuf.WriteString(q.order[i].clause)
 		}
 	}
 	queryBuf.WriteString(") ")
@@ -282,21 +447,44 @@ func (q *Query) String() string {
 	if q.filter != "" {
 		queryBuf.WriteString("@filter(")
 		queryBuf.WriteString(q.filter)
-		queryBuf.WriteByte(')')
+		queryBuf.WriteString(") ")
+	}
+
+	if q.groupBy != "" {
+		queryBuf.WriteString("@groupby(")
+		queryBuf.WriteString(q.groupBy)
+		queryBuf.WriteString(") ")
 	}
 
 	if q.recurse > 0 {
 		queryBuf.WriteString("@recurse(depth:")
 		queryBuf.Write(intToBytes(q.recurse))
-		queryBuf.WriteByte(')')
+		queryBuf.WriteString(") ")
 	}
 
-	if q.query == "" {
-		q.All()
+	// allow var to have empty query block
+	if !q.isVar {
+		if q.query == "" {
+			q.All()
+		}
 	}
 
 	queryBuf.WriteString(q.query)
-	queryBuf.WriteString(" \n}")
+	queryBuf.WriteString("\n")
+}
+
+func (q *Query) String() string {
+	var queryBuf strings.Builder
+	if q.vars != nil {
+		queryBuf.WriteString("query ")
+		queryBuf.WriteString(q.paramString)
+	}
+
+	queryBuf.WriteString("{\n")
+
+	q.generateQuery(&queryBuf)
+
+	queryBuf.WriteString("}")
 
 	return queryBuf.String()
 }
@@ -354,6 +542,16 @@ func Nodes(jsonData []byte, model interface{}) error {
 	}
 
 	return fmt.Errorf("invalid json result for nodes: %s", jsonData)
+}
+
+// NewQueryBlock returns a new empty query block
+func NewQueryBlock() *Query {
+	return &Query{}
+}
+
+// NewQuery returns a new empty query
+func NewQuery() *Query {
+	return &Query{}
 }
 
 func parseQueryWithParams(query string, params []interface{}) string {

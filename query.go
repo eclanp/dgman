@@ -135,6 +135,7 @@ type Query struct {
 	filter      string
 	recurse     int
 	query       string
+	blocks      []*Block
 }
 
 type PagedResults struct {
@@ -168,6 +169,11 @@ func (q *Query) Var() *Query {
 // Type sets the model struct to infer the node type
 func (q *Query) Type(model interface{}) *Query {
 	q.model = model
+	return q
+}
+
+func (q *Query) Block(b *Block) *Query {
+	q.blocks = append(q.blocks, b)
 	return q
 }
 
@@ -376,6 +382,13 @@ func (q *Query) NodesAndCount() (count int, err error) {
 func (q *Query) generateQuery(queryBuf *strings.Builder) {
 	queryBuf.WriteString("\t")
 
+	if len(q.blocks) > 0 {
+		for i := 0; i < len(q.blocks); i++ {
+			queryBuf.WriteString(q.blocks[i].String())
+			queryBuf.WriteString("\n\t")
+		}
+	}
+
 	if q.as != "" {
 		queryBuf.WriteString(q.as)
 		queryBuf.WriteString(" as ")
@@ -459,6 +472,13 @@ func (q *Query) generateQuery(queryBuf *strings.Builder) {
 
 	queryBuf.WriteString(q.query)
 	queryBuf.WriteString("\n")
+}
+
+func (q *Query) ToBlock() *Block {
+	q.Var()
+	b := &Block{}
+	b.Query(q)
+	return b
 }
 
 func (q *Query) String() string {
